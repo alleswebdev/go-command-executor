@@ -1,0 +1,13 @@
+ Port: 55
+ Name: "name"
+
+ Groups: 
+  kp1: 
+    name: "kp1"
+    command: "ls /dev"
+    start: "ls /dev"
+    stop: "ls /dev"
+    restart: "ls /dev"
+  group2: 
+    name: "printor2"
+    command: "docker -v"
