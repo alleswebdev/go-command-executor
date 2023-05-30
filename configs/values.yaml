@@ -1,7 +1,7 @@
- Port: 55
+ Port: 8080
  Name: "name"
 
- Groups: 
+ Commands:
   kp1: 
     name: "kp1"
     command: "ls /dev"
@@ -11,3 +11,4 @@
   group2: 
     name: "printor2"
     command: "docker -v"
+    start: "docker -v"

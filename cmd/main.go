@@ -1,63 +1,66 @@
 package main
 
 import (
-	"bytes"
+	"context"
 	"fmt"
-	"io"
+	"github.com/alleswebdev/go-command-executor/internal/command"
+	"github.com/alleswebdev/go-command-executor/internal/config"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"log"
+	"net/http"
 	"os"
-	"os/exec"
-
-	"github.com/spf13/viper"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
-type config struct {
-	Port   int
-	Name   string
-	Groups map[string]Group
-}
-
-type Group struct {
-	Name    string
-	Command string
-	Start   string
-	Stop    string
-	Restart string
-}
-
 func main() {
-	cfg := config{}
+	cfg := config.GetAppConfig()
+	server := &http.Server{Addr: fmt.Sprintf("0.0.0.0:%d", cfg.Port), Handler: service(cfg)}
+	serverCtx, serverStopCtx := context.WithCancel(context.Background())
 
-	viper.SetConfigName("values")
-	viper.SetConfigType("yaml")
-	viper.AddConfigPath("../configs")
-	viper.AddConfigPath("./configs")
-	viper.AddConfigPath(".")
-	err := viper.ReadInConfig()
-	if err != nil {
-		panic(fmt.Errorf("fatal error config file: %w", err))
-	}
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	go func() {
+		<-sig
+		shutdownCtx, _ := context.WithTimeout(serverCtx, 30*time.Second)
 
-	err = viper.Unmarshal(&cfg)
-	if err != nil {
-		fmt.Println(err)
-	}
+		go func() {
+			<-shutdownCtx.Done()
+			if shutdownCtx.Err() == context.DeadlineExceeded {
+				log.Fatal("graceful shutdown timed out.. forcing exit.")
+			}
+		}()
 
-	fmt.Println(cfg)
-
-	for _, group := range cfg.Groups {
-		cmd := exec.Command("/bin/bash", "-c", group.Command)
-
-		var stdoutBuf, stderrBuf bytes.Buffer
-		cmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
-		cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
-
-		err = cmd.Start()
-
+		err := server.Shutdown(shutdownCtx)
 		if err != nil {
-			fmt.Println(err.Error())
+			log.Fatal(err)
 		}
+		serverStopCtx()
+	}()
 
-		cmd.Wait()
-		fmt.Println(stdoutBuf.String())
+	err := server.ListenAndServe()
+	if err != nil && err != http.ErrServerClosed {
+		log.Fatal(err)
 	}
+
+	<-serverCtx.Done()
+}
+
+func service(cfg config.Config) http.Handler {
+	r := chi.NewRouter()
+
+	r.Use(middleware.RequestID)
+	r.Use(middleware.RealIP)
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
+
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("sup"))
+	})
+
+	r.Mount("/commands", New(cfg, command.GetCommandsMapFromConfig(cfg)).Routes())
+
+	return r
 }
