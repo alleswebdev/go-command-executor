@@ -1,66 +1,47 @@
 package main
 
 import (
-	"context"
-	"fmt"
 	"github.com/alleswebdev/go-command-executor/internal/command"
 	"github.com/alleswebdev/go-command-executor/internal/config"
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	"github.com/gofiber/fiber/v2"
+	"github.com/pkg/errors"
 	"log"
-	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
+	"strconv"
 )
 
 func main() {
 	cfg := config.GetAppConfig()
-	server := &http.Server{Addr: fmt.Sprintf("0.0.0.0:%d", cfg.Port), Handler: service(cfg)}
-	serverCtx, serverStopCtx := context.WithCancel(context.Background())
-
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
-	go func() {
-		<-sig
-		shutdownCtx, _ := context.WithTimeout(serverCtx, 30*time.Second)
-
-		go func() {
-			<-shutdownCtx.Done()
-			if shutdownCtx.Err() == context.DeadlineExceeded {
-				log.Fatal("graceful shutdown timed out.. forcing exit.")
-			}
-		}()
-
-		err := server.Shutdown(shutdownCtx)
-		if err != nil {
-			log.Fatal(err)
-		}
-		serverStopCtx()
-	}()
-
-	err := server.ListenAndServe()
-	if err != nil && err != http.ErrServerClosed {
-		log.Fatal(err)
-	}
-
-	<-serverCtx.Done()
-}
-
-func service(cfg config.Config) http.Handler {
-	r := chi.NewRouter()
-
-	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
-	r.Use(middleware.Logger)
-	r.Use(middleware.Recoverer)
-
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("sup"))
+	app := fiber.New(fiber.Config{
+		Prefork:       true,
+		CaseSensitive: true,
+		StrictRouting: true,
+		ServerHeader:  "Fiber",
+		AppName:       "Test App v1.0.1",
 	})
 
-	r.Mount("/commands", New(cfg, command.GetCommandsMapFromConfig(cfg)).Routes())
+	app.Static("/", "./web/commander-front/dist")
+	app.Get("/api/list", func(c *fiber.Ctx) error {
+		return c.JSON(cfg.Commands)
+	})
+	app.Post("/api/exec/:name", func(c *fiber.Ctx) error {
+		name := c.Params("name")
+		if len(name) == 0 {
+			return c.SendStatus(500)
+		}
 
-	return r
+		commandsMap := command.GetCommandsMapFromConfig(cfg)
+		if cmd, ok := commandsMap[name]; ok {
+			result, err := cmd.Start()
+			if err != nil {
+				return fiber.NewError(fiber.StatusInternalServerError, errors.Wrap(err, "cmd.Start").Error())
+			}
+
+			return c.JSON(result)
+		}
+
+		return c.SendStatus(fiber.StatusNotFound)
+	})
+
+	log.Fatal(app.Listen(":" + strconv.Itoa(cfg.Port)))
+
 }
